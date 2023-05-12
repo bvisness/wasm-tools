@@ -146,8 +146,11 @@ mod prelude {
 /// ```
 #[macro_export]
 macro_rules! for_each_operator {
-    ($mac:ident) => {
+    ($mac:ident $(, $($arg:tt),*)?) => {
         $mac! {
+            // Pass any arguments to the destination macro first
+            $($($arg),*,)*
+
             @mvp Unreachable => visit_unreachable
             @mvp Nop => visit_nop
             @mvp Block { blockty: $crate::BlockType } => visit_block
