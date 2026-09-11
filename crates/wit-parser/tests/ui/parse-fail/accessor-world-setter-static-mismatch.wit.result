@@ -1,0 +1,5 @@
+setter `[method][set]blob.position` has no corresponding getter `[method][get]blob.position`
+     --> tests/ui/parse-fail/accessor-world-setter-static-mismatch.wit:8:5
+      |
+    8 |     position: set(value: u64);
+      |     ^-------
