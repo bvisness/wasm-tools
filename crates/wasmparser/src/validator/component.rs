@@ -4716,6 +4716,21 @@ impl ComponentNameContext {
             );
         }
 
+        // Setters must be preceded by a matching getter. This matching is
+        // stricter than strong uniqueness.
+        if let ComponentNameKind::Plain(plain) = kebab.kind()
+            && plain.accessor == Some(AccessorKind::Set)
+        {
+            let getter = plain.getter_for_setter();
+            if !items.contains_key(getter.as_str()) {
+                bail!(
+                    offset,
+                    "{kind} name `{kebab}` requires a preceding {kind} named `{getter}`",
+                    kind = kind.desc(),
+                );
+            }
+        }
+
         // Otherwise all strings must be unique, regardless of their name, so
         // consult the `items` set to ensure that we're not for example
         // importing the same interface ID twice.
@@ -4842,11 +4857,11 @@ impl ComponentNameContext {
                         self.validate_resource_name(*id, name.resource().unwrap(), offset)?;
                     }
 
+                    // Static methods don't have much validation beyond that they must
+                    // be a function and the resource name referred to must already be
+                    // in this context.
                     Some(ResourceFuncKind::Static) => {
                         func()?;
-                        // Static methods don't have much validation beyond that they must
-                        // be a function and the resource name referred to must already be
-                        // in this context.
                         if !self
                             .all_resource_names
                             .contains(name.resource().unwrap().as_str())
@@ -4858,12 +4873,59 @@ impl ComponentNameContext {
                     None => {}
                 }
 
-                match name.accessor {
-                    // TODO(ben): Getter validation
-                    Some(AccessorKind::Get) => {}
-                    // TODO(ben): Setter validation
-                    Some(AccessorKind::Set) => {}
-                    None => {}
+                if let Some(accessor) = name.accessor {
+                    let ty = func()?;
+                    let desc = match accessor {
+                        AccessorKind::Get => "getter",
+                        AccessorKind::Set => "setter",
+                    };
+                    if ty.async_ {
+                        bail!(offset, "{desc} function cannot be async");
+                    }
+
+                    // Methods have a `self` parameter that we already validated above.
+                    let (num_own_params, besides_self) = match name.resource_func {
+                        Some(ResourceFuncKind::Method) => (ty.params.len() - 1, " besides `self`"),
+                        _ => (ty.params.len(), ""),
+                    };
+                    match accessor {
+                        // Getters take nothing and must return a value.
+                        AccessorKind::Get => {
+                            if num_own_params != 0 {
+                                bail!(
+                                    offset,
+                                    "getter function should have no parameters{besides_self}"
+                                );
+                            }
+                            if ty.result.is_none() {
+                                bail!(offset, "getter function should return a value");
+                            }
+                        }
+
+                        // Setters take one value and return either nothing or `(result (error $E)?)`.
+                        AccessorKind::Set => {
+                            if num_own_params != 1 {
+                                bail!(
+                                    offset,
+                                    "setter function should have exactly one parameter{besides_self}"
+                                );
+                            }
+                            let result_ok = match ty.result {
+                                None => true,
+                                Some(ComponentValType::Primitive(_)) => false,
+                                Some(ComponentValType::Type(id)) => matches!(
+                                    &types[id],
+                                    ComponentDefinedType::Result { ok: None, .. }
+                                ),
+                            };
+                            if !result_ok {
+                                bail!(
+                                    offset,
+                                    "setter function should return nothing or `(result (error $E)?)`"
+                                );
+                            }
+                        }
+                    }
                 }
             }
         }

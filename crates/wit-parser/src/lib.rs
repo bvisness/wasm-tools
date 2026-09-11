@@ -978,6 +978,25 @@ pub enum FunctionKind {
     /// ```
     AsyncFreestanding,
 
+    /// A getter function, which takes no parameters and returns a value.
+    ///
+    /// ```wit
+    /// interface foo {
+    ///     the-prop: get() -> u32;
+    /// }
+    /// ```
+    Getter,
+
+    /// A setter function, which takes one parameter and returns either nothing
+    /// or `result<_, error?>`.
+    ///
+    /// ```wit
+    /// interface foo {
+    ///     the-prop: set(value: u32);
+    /// }
+    /// ```
+    Setter,
+
     /// A resource method where the first parameter is implicitly
     /// `borrow<T>`.
     ///
@@ -1004,6 +1023,30 @@ pub enum FunctionKind {
     #[cfg_attr(feature = "serde", serde(serialize_with = "serialize_id"))]
     AsyncMethod(TypeId),
 
+    /// A resource getter where the first parameter is implicitly `borrow<T>`.
+    ///
+    /// ```wit
+    /// interface foo {
+    ///     resource r {
+    ///         the-prop: get() -> u32;
+    ///     }
+    /// }
+    /// ```
+    #[cfg_attr(feature = "serde", serde(serialize_with = "serialize_id"))]
+    MethodGetter(TypeId),
+
+    /// A resource setter where the first parameter is implicitly `borrow<T>`.
+    ///
+    /// ```wit
+    /// interface foo {
+    ///     resource r {
+    ///         the-prop: set(value: u32);
+    ///     }
+    /// }
+    /// ```
+    #[cfg_attr(feature = "serde", serde(serialize_with = "serialize_id"))]
+    MethodSetter(TypeId),
+
     /// A static resource method.
     ///
     /// ```wit
@@ -1028,6 +1071,30 @@ pub enum FunctionKind {
     #[cfg_attr(feature = "serde", serde(serialize_with = "serialize_id"))]
     AsyncStatic(TypeId),
 
+    /// A static resource getter.
+    ///
+    /// ```wit
+    /// interface foo {
+    ///     resource r {
+    ///         the-prop: static get() -> u32;
+    ///     }
+    /// }
+    /// ```
+    #[cfg_attr(feature = "serde", serde(serialize_with = "serialize_id"))]
+    StaticGetter(TypeId),
+
+    /// A static resource setter.
+    ///
+    /// ```wit
+    /// interface foo {
+    ///     resource r {
+    ///         the-prop: static set(value: u32);
+    ///     }
+    /// }
+    /// ```
+    #[cfg_attr(feature = "serde", serde(serialize_with = "serialize_id"))]
+    StaticSetter(TypeId),
+
     /// A resource constructor where the return value is implicitly `own<T>`.
     ///
     /// ```wit
@@ -1048,36 +1115,86 @@ impl FunctionKind {
             FunctionKind::Freestanding
             | FunctionKind::Method(_)
             | FunctionKind::Static(_)
-            | FunctionKind::Constructor(_) => false,
+            | FunctionKind::Constructor(_)
+            | FunctionKind::Getter
+            | FunctionKind::Setter
+            | FunctionKind::MethodGetter(_)
+            | FunctionKind::MethodSetter(_)
+            | FunctionKind::StaticGetter(_)
+            | FunctionKind::StaticSetter(_) => false,
             FunctionKind::AsyncFreestanding
             | FunctionKind::AsyncMethod(_)
             | FunctionKind::AsyncStatic(_) => true,
         }
     }
 
+    /// Returns whether this function is a getter or a setter.
+    pub fn accessor(&self) -> Option<AccessorKind> {
+        match self {
+            FunctionKind::Getter
+            | FunctionKind::MethodGetter(_)
+            | FunctionKind::StaticGetter(_) => Some(AccessorKind::Getter),
+            FunctionKind::Setter
+            | FunctionKind::MethodSetter(_)
+            | FunctionKind::StaticSetter(_) => Some(AccessorKind::Setter),
+            FunctionKind::Freestanding
+            | FunctionKind::AsyncFreestanding
+            | FunctionKind::Method(_)
+            | FunctionKind::AsyncMethod(_)
+            | FunctionKind::Static(_)
+            | FunctionKind::AsyncStatic(_)
+            | FunctionKind::Constructor(_) => None,
+        }
+    }
+
     /// Returns the resource, if present, that this function kind refers to.
     pub fn resource(&self) -> Option<TypeId> {
         match self {
-            FunctionKind::Freestanding | FunctionKind::AsyncFreestanding => None,
+            FunctionKind::Freestanding
+            | FunctionKind::AsyncFreestanding
+            | FunctionKind::Getter
+            | FunctionKind::Setter => None,
             FunctionKind::Method(id)
             | FunctionKind::Static(id)
             | FunctionKind::Constructor(id)
             | FunctionKind::AsyncMethod(id)
-            | FunctionKind::AsyncStatic(id) => Some(*id),
+            | FunctionKind::AsyncStatic(id)
+            | FunctionKind::MethodGetter(id)
+            | FunctionKind::MethodSetter(id)
+            | FunctionKind::StaticGetter(id)
+            | FunctionKind::StaticSetter(id) => Some(*id),
         }
     }
 
     /// Returns the resource, if present, that this function kind refers to.
     pub fn resource_mut(&mut self) -> Option<&mut TypeId> {
         match self {
-            FunctionKind::Freestanding | FunctionKind::AsyncFreestanding => None,
+            FunctionKind::Freestanding
+            | FunctionKind::AsyncFreestanding
+            | FunctionKind::Getter
+            | FunctionKind::Setter => None,
             FunctionKind::Method(id)
             | FunctionKind::Static(id)
             | FunctionKind::Constructor(id)
             | FunctionKind::AsyncMethod(id)
-            | FunctionKind::AsyncStatic(id) => Some(id),
+            | FunctionKind::AsyncStatic(id)
+            | FunctionKind::MethodGetter(id)
+            | FunctionKind::MethodSetter(id)
+            | FunctionKind::StaticGetter(id)
+            | FunctionKind::StaticSetter(id) => Some(id),
         }
     }
+}
+
+/// Whether an accessor function is a getter or a setter.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(Serialize))]
+#[cfg_attr(feature = "serde", serde(rename_all = "kebab-case"))]
+pub enum AccessorKind {
+    /// A `get` function, encoded with a `[get]` name.
+    Getter,
+    /// A `set` function, encoded with a `[set]` name.
+    Setter,
 }
 
 /// Possible forms of name mangling that are supported by this crate.
@@ -1249,7 +1366,14 @@ impl Function {
             FunctionKind::Method(_)
             | FunctionKind::Static(_)
             | FunctionKind::AsyncMethod(_)
-            | FunctionKind::AsyncStatic(_) => &self.name[self.name.find('.').unwrap() + 1..],
+            | FunctionKind::AsyncStatic(_)
+            | FunctionKind::MethodGetter(_)
+            | FunctionKind::MethodSetter(_)
+            | FunctionKind::StaticGetter(_)
+            | FunctionKind::StaticSetter(_) => &self.name[self.name.find('.').unwrap() + 1..],
+            FunctionKind::Getter | FunctionKind::Setter => {
+                &self.name[self.name.find(']').unwrap() + 1..]
+            }
             FunctionKind::Constructor(_) => "constructor",
         }
     }

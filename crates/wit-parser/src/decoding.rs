@@ -14,7 +14,9 @@ use wasmparser::{
         ComponentAnyTypeId, ComponentDefinedType, ComponentEntityType, ComponentItem,
         ComponentType, ComponentValType,
     },
-    names::{ComponentName, ComponentNameKind},
+    names::{
+        AccessorKind as ComponentAccessorKind, ComponentName, ComponentNameKind, ResourceFuncKind,
+    },
     types,
     types::Types,
 };
@@ -174,7 +176,7 @@ impl ComponentInfo {
             ComponentNameKind::Interface(name) if name.interface().as_str() == "wit" => {
                 Some(WitEncodingVersion::V1)
             }
-            ComponentNameKind::Label(_) => Some(WitEncodingVersion::V2),
+            ComponentNameKind::Plain(name) if name.is_bare() => Some(WitEncodingVersion::V2),
             _ => None,
         }
     }
@@ -1020,7 +1022,7 @@ impl WitPackageDecoder<'_> {
         let component_name = self.parse_component_name(name)?;
         match component_name.kind() {
             ComponentNameKind::Interface(name) => Ok(Some(name.interface().to_string())),
-            ComponentNameKind::Label(_name) => Ok(None),
+            ComponentNameKind::Plain(name) if name.is_bare() => Ok(None),
             _ => bail!("cannot extract item name from: {name}"),
         }
     }
@@ -1197,28 +1199,61 @@ impl WitPackageDecoder<'_> {
             stability: Default::default(),
             external_id: item.external_id.clone(),
             kind: match name.kind() {
-                ComponentNameKind::Label(_) => {
-                    if ty.async_ {
-                        FunctionKind::AsyncFreestanding
-                    } else {
-                        FunctionKind::Freestanding
+                ComponentNameKind::Plain(plain) => {
+                    if plain.accessor.is_some() && ty.async_ {
+                        panic!("function `{name}` is an async accessor (should be impossible)");
                     }
-                }
-                ComponentNameKind::Constructor(resource) => {
-                    FunctionKind::Constructor(self.resources[&owner][resource.as_str()])
-                }
-                ComponentNameKind::Method(name) => {
-                    if ty.async_ {
-                        FunctionKind::AsyncMethod(self.resources[&owner][name.resource().as_str()])
-                    } else {
-                        FunctionKind::Method(self.resources[&owner][name.resource().as_str()])
-                    }
-                }
-                ComponentNameKind::Static(name) => {
-                    if ty.async_ {
-                        FunctionKind::AsyncStatic(self.resources[&owner][name.resource().as_str()])
-                    } else {
-                        FunctionKind::Static(self.resources[&owner][name.resource().as_str()])
+
+                    let resource = plain
+                        .resource()
+                        .map(|resource| self.resources[&owner][resource.as_str()]);
+                    match (plain.resource_func, plain.accessor) {
+                        (None, None) => {
+                            if ty.async_ {
+                                FunctionKind::AsyncFreestanding
+                            } else {
+                                FunctionKind::Freestanding
+                            }
+                        }
+                        (None, Some(ComponentAccessorKind::Get)) => FunctionKind::Getter,
+                        (None, Some(ComponentAccessorKind::Set)) => FunctionKind::Setter,
+
+                        (Some(ResourceFuncKind::Constructor), None) => {
+                            FunctionKind::Constructor(resource.unwrap())
+                        }
+                        (Some(ResourceFuncKind::Constructor), _) => {
+                            panic!(
+                                "function `{name}` is a constructor with an accessor (should be impossible)"
+                            );
+                        }
+
+                        (Some(ResourceFuncKind::Method), None) => {
+                            if ty.async_ {
+                                FunctionKind::AsyncMethod(resource.unwrap())
+                            } else {
+                                FunctionKind::Method(resource.unwrap())
+                            }
+                        }
+                        (Some(ResourceFuncKind::Method), Some(ComponentAccessorKind::Get)) => {
+                            FunctionKind::MethodGetter(resource.unwrap())
+                        }
+                        (Some(ResourceFuncKind::Method), Some(ComponentAccessorKind::Set)) => {
+                            FunctionKind::MethodSetter(resource.unwrap())
+                        }
+
+                        (Some(ResourceFuncKind::Static), None) => {
+                            if ty.async_ {
+                                FunctionKind::AsyncStatic(resource.unwrap())
+                            } else {
+                                FunctionKind::Static(resource.unwrap())
+                            }
+                        }
+                        (Some(ResourceFuncKind::Static), Some(ComponentAccessorKind::Get)) => {
+                            FunctionKind::StaticGetter(resource.unwrap())
+                        }
+                        (Some(ResourceFuncKind::Static), Some(ComponentAccessorKind::Set)) => {
+                            FunctionKind::StaticSetter(resource.unwrap())
+                        }
                     }
                 }
 

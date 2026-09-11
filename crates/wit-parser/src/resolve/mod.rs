@@ -4163,52 +4163,51 @@ impl Remap {
             )?;
         }
 
-        // Validate that there are no case-insensitive duplicate names in imports/exports
-        Self::validate_world_case_insensitive_names(resolve, id)?;
+        // Validate that all names in the imports/exports are still strongly unique.
+        Self::validate_world_strongly_unique_names(resolve, id)?;
 
         Ok(())
     }
 
-    /// Validates that a world's imports and exports don't have case-insensitive
-    /// duplicate names. Per the WIT specification, kebab-case identifiers are
-    /// case-insensitive within the same scope.
-    fn validate_world_case_insensitive_names(
+    /// Validates that a world's imports and exports are each strongly unique.
+    fn validate_world_strongly_unique_names(
         resolve: &Resolve,
         world_id: WorldId,
     ) -> ResolveResult<()> {
+        use wasmparser::names::ComponentName;
+
         let world = &resolve.worlds[world_id];
 
-        // Helper closure to check for case-insensitive duplicates in a map
         let validate_names =
             |items: &IndexMap<WorldKey, WorldItem>, item_type: &str| -> ResolveResult<()> {
-                let mut seen_lowercase: HashMap<String, String> = HashMap::new();
+                let mut seen: HashMap<ComponentName, &str> = HashMap::new();
 
                 for key in items.keys() {
-                    // Only WorldKey::Name variants can have case-insensitive conflicts
-                    if let WorldKey::Name(name) = key {
-                        let lowercase_name = name.to_lowercase();
+                    // Only `WorldKey::Name` variants can conflict with each
+                    // other here because interfaces are keyed by ID.
+                    let WorldKey::Name(name) = key else {
+                        continue;
+                    };
+                    let Ok(component_name) = ComponentName::new(name, 0) else {
+                        continue;
+                    };
 
-                        if let Some(existing_name) = seen_lowercase.get(&lowercase_name) {
-                            // Only error on case-insensitive duplicates (e.g., "foo" vs "FOO").
-                            // Exact duplicates would have been caught earlier.
-                            if existing_name != name {
-                                // TODO: `WorldKey::Name` does not carry a `Span`, so we
-                                // cannot point at the conflicting item. Add a span to
-                                // `WorldKey::Name` to improve this error.
-                                return Err(ResolveError::new_semantic(
-                                    Span::default(),
-                                    format!(
-                                        "{item_type} `{name}` in world `{}` conflicts with \
-                                     {item_type} `{existing_name}` \
-                                     (kebab-case identifiers are case-insensitive)",
-                                        world.name,
-                                    ),
-                                ));
-                            }
-                        }
-
-                        seen_lowercase.insert(lowercase_name, name.clone());
+                    if let Some(existing_name) = seen.get(&component_name) {
+                        // TODO: `WorldKey::Name` does not carry a `Span`, so we
+                        // cannot point at the conflicting item. Add a span to
+                        // `WorldKey::Name` to improve this error.
+                        return Err(ResolveError::new_semantic(
+                            Span::default(),
+                            format!(
+                                "{item_type} `{name}` in world `{}` conflicts with \
+                                 {item_type} `{existing_name}` \
+                                 (names must be strongly unique)",
+                                world.name,
+                            ),
+                        ));
                     }
+
+                    seen.insert(component_name, name);
                 }
 
                 Ok(())
@@ -4635,11 +4634,17 @@ impl<'a> MergeMap<'a> {
         match (&from_func.kind, &into_func.kind) {
             (FunctionKind::Freestanding, FunctionKind::Freestanding) => {}
             (FunctionKind::AsyncFreestanding, FunctionKind::AsyncFreestanding) => {}
+            (FunctionKind::Getter, FunctionKind::Getter) => {}
+            (FunctionKind::Setter, FunctionKind::Setter) => {}
 
             (FunctionKind::Method(from), FunctionKind::Method(into))
             | (FunctionKind::Static(from), FunctionKind::Static(into))
             | (FunctionKind::AsyncMethod(from), FunctionKind::AsyncMethod(into))
             | (FunctionKind::AsyncStatic(from), FunctionKind::AsyncStatic(into))
+            | (FunctionKind::MethodGetter(from), FunctionKind::MethodGetter(into))
+            | (FunctionKind::MethodSetter(from), FunctionKind::MethodSetter(into))
+            | (FunctionKind::StaticGetter(from), FunctionKind::StaticGetter(into))
+            | (FunctionKind::StaticSetter(from), FunctionKind::StaticSetter(into))
             | (FunctionKind::Constructor(from), FunctionKind::Constructor(into)) => {
                 self.build_type_id(*from, *into)
                     .context("different function kind types")?;
@@ -4651,7 +4656,13 @@ impl<'a> MergeMap<'a> {
             | (FunctionKind::Freestanding, _)
             | (FunctionKind::AsyncFreestanding, _)
             | (FunctionKind::AsyncMethod(_), _)
-            | (FunctionKind::AsyncStatic(_), _) => {
+            | (FunctionKind::AsyncStatic(_), _)
+            | (FunctionKind::Getter, _)
+            | (FunctionKind::Setter, _)
+            | (FunctionKind::MethodGetter(_), _)
+            | (FunctionKind::MethodSetter(_), _)
+            | (FunctionKind::StaticGetter(_), _)
+            | (FunctionKind::StaticSetter(_), _) => {
                 bail!("different function kind types")
             }
         }

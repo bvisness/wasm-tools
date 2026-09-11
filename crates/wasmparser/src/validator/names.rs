@@ -3,7 +3,6 @@
 
 use crate::prelude::*;
 use crate::{Result, WasmFeatures};
-use alloc::borrow::ToOwned;
 use core::cmp::Ordering;
 use core::fmt;
 use core::hash::{Hash, Hasher};
@@ -554,9 +553,9 @@ impl<'a> PlainName<'a> {
         // (Really we have to add back those annotations because there's
         // nothing in `raw` to strip.)
         if resource_func_kind == Some(ResourceFuncKind::Constructor) {
-            CONSTRUCTOR.to_owned() + &lower
+            format!("{CONSTRUCTOR}{lower}")
         } else if accessor_kind == Some(AccessorKind::Set) {
-            SET.to_owned() + &lower
+            format!("{SET}{lower}")
         } else {
             lower
         }
@@ -574,16 +573,17 @@ impl<'a> PlainName<'a> {
         &self.canonicalized
     }
 
-    /// If the name is `[method]` or `[static]`, returns the resource name
-    /// (i.e. the `a` in `[method]a.b`).
+    /// If the name is associated with a resource type, returns the resource
+    /// name.
     pub fn resource(&self) -> Option<KebabStr<'a>> {
         use ResourceFuncKind as RF;
         match self.resource_func {
+            Some(RF::Constructor) => Some(KebabStr::new_unchecked(self.raw)),
             Some(RF::Method) | Some(RF::Static) => {
                 let dot = self.raw.find('.').unwrap();
                 Some(KebabStr::new_unchecked(&self.raw[..dot]))
             }
-            _ => None,
+            None => None,
         }
     }
 
@@ -607,6 +607,19 @@ impl<'a> PlainName<'a> {
     /// Returns true if the name has no annotations.
     pub fn is_bare(&self) -> bool {
         self.resource_func.is_none() && self.accessor.is_none()
+    }
+
+    /// If this name is a setter (`[set]`), returns the name of the expected
+    /// matching getter. Panics if this name is not a setter.
+    pub fn getter_for_setter(&self) -> String {
+        assert!(self.accessor == Some(AccessorKind::Set));
+        let prefix = match self.resource_func {
+            Some(ResourceFuncKind::Method) => METHOD,
+            Some(ResourceFuncKind::Static) => STATIC,
+            None => "",
+            _ => unreachable!(),
+        };
+        format!("{prefix}{GET}{}", self.raw)
     }
 }
 
@@ -1186,6 +1199,8 @@ fn is_base64(s: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use alloc::borrow::ToOwned;
+
     use super::*;
     use std::collections::HashSet;
 
@@ -1345,5 +1360,33 @@ mod tests {
             assert!(!s.insert(parse_kebab_name("[method][set]foo.PROP").unwrap()));
             assert!(!s.insert(parse_kebab_name("[static][set]foo.prop").unwrap()));
         }
+    }
+
+    #[test]
+    fn getter_for_setter() {
+        fn getter(s: &str) -> String {
+            match parse_kebab_name(s).unwrap().kind() {
+                ComponentNameKind::Plain(p) if p.accessor == Some(AccessorKind::Set) => {
+                    p.getter_for_setter()
+                }
+                _ => "INVALID".to_owned(),
+            }
+        }
+
+        assert_eq!(getter("foo"), "INVALID");
+        assert_eq!(getter("[get]foo"), "INVALID");
+        assert_eq!(getter("[constructor]foo"), "INVALID");
+        assert_eq!(getter("[method]foo.bar"), "INVALID");
+        assert_eq!(getter("[method][get]foo.bar"), "INVALID");
+        assert_eq!(getter("[static][get]foo.bar"), "INVALID");
+        assert_eq!(getter("foo:bar/baz"), "INVALID");
+
+        assert_eq!(getter("[set]foo"), "[get]foo");
+        assert_eq!(getter("[set]foo-BAR"), "[get]foo-BAR");
+        assert_eq!(getter("[method][set]foo.bar"), "[method][get]foo.bar");
+        assert_eq!(
+            getter("[static][set]foo-a.bar-B"),
+            "[static][get]foo-a.bar-B"
+        );
     }
 }
